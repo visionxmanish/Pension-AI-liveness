@@ -6,3 +6,4 @@ deepface
 opencv-python
 tf-keras
 requests
+torch
