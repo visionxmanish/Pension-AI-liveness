@@ -7,3 +7,4 @@ opencv-python
 tf-keras
 requests
 torch
+opencv-contrib-python

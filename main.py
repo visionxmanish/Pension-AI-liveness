@@ -69,7 +69,6 @@ async def verify_user(
     user = db.query(models.User).filter(models.User.pension_id == pension_id).first()
     if not user:
         # If user not found, we can't verify. 
-        # Should we generate a meet link? Probably yes, to handle "I can't log in" cases.
         return schemas.VerificationResponse(
             status="failure",
             message="User not found",
@@ -129,3 +128,124 @@ async def verify_user(
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+from services.liveness_service import verify_video_liveness
+
+@app.post("/verify_liveness_video", response_model=schemas.VerificationResponse)
+async def verify_liveness_video(
+    pension_id: str = Form(...),
+    verification_type: str = Form(...), # e.g., "smile", "move_head_left", "move_head_right"
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+
+    # if file is not video, return failure
+    if not file.filename.endswith(".mp4"):
+        return schemas.VerificationResponse(
+            status="failure",
+            message="File is not a video",
+            meet_link=generate_meet_link()
+        )
+
+    # # save to temp file 
+    # with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+    #     shutil.copyfileobj(file.file, tmp)
+    #     tmp_path = tmp.name
+    
+    # Fetch user
+    user = db.query(models.User).filter(models.User.pension_id == pension_id).first()
+    if not user:
+        return schemas.VerificationResponse(
+            status="failure",
+            message="User not found",
+            meet_link=generate_meet_link()
+        )
+
+    # Fetch stored embedding
+    if not user.face_encodings:
+         return schemas.VerificationResponse(
+            status="failure",
+            message="No registered face data found for this user",
+            meet_link=generate_meet_link()
+        )
+    
+    stored_embedding = user.face_encodings[0].embedding
+
+    # Save temp video file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
+        shutil.copyfileobj(file.file, tmp_video)
+        tmp_video_path = tmp_video.name
+
+    best_frame_path = None
+    try:
+        # Map verification_type to required_actions
+        # Supported types: smile, move_head_left, move_head_right
+        actions_map = {
+            "smile": "smile",
+            "move_head_left": "turn_left",
+            "move_head_right": "turn_right"
+        }
+        
+        # Allow comma-separated values
+        requested_types = [t.strip() for t in verification_type.split(",")]
+        required_actions = []
+        
+        for rt in requested_types:
+            if rt in actions_map:
+                required_actions.append(actions_map[rt])
+            else:
+                # Fallback or ignore? Let's just pass it if it matches internal names
+                if rt in ["turn_left", "turn_right", "smile"]:
+                     required_actions.append(rt)
+        
+        if not required_actions:
+             # Default if invalid type provided
+             required_actions = ["smile"] 
+
+        # 1. Verify Liveness (Video Actions)
+        is_live, liveness_msg, best_frame_path = verify_video_liveness(
+            tmp_video_path, 
+            required_actions=required_actions
+        )
+        
+        if not is_live:
+             return schemas.VerificationResponse(
+                status="failure",
+                message=liveness_msg,
+                meet_link=generate_meet_link()
+            )
+
+        # 2. Verify Face (using the best frame from video)
+        if best_frame_path:
+            is_match, match_msg = verify_face(best_frame_path, stored_embedding)
+            
+            if is_match:
+                return schemas.VerificationResponse(
+                    status="success",
+                    message="Verification successful"
+                )
+            else:
+                return schemas.VerificationResponse(
+                    status="failure",
+                    message=f"Verification failed: {match_msg}",
+                    meet_link=generate_meet_link()
+                )
+        else:
+             return schemas.VerificationResponse(
+                status="failure",
+                message="Could not extract a valid frame for face verification",
+                meet_link=generate_meet_link()
+            )
+
+    except Exception as e:
+        return schemas.VerificationResponse(
+            status="failure",
+            message=f"System error: {str(e)}",
+            meet_link=generate_meet_link()
+        )
+
+    finally:
+        if os.path.exists(tmp_video_path):
+            os.remove(tmp_video_path)
+        if best_frame_path and os.path.exists(best_frame_path):
+            os.remove(best_frame_path)
