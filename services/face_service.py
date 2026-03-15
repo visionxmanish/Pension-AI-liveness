@@ -4,34 +4,48 @@ from deepface import DeepFace
 import tempfile
 import os
 
-def validate_image_quality(image_path):
+def validate_image_quality(image_path, blur_threshold=100.0, glare_ratio_threshold=0.05):
     """
-    Checks image for glare and blurriness.
-    Returns (is_valid, message)
+    Checks image for glare and blurriness with improved spatial analysis.
     """
+    # 1. Efficient Loading
     image = cv2.imread(image_path)
     if image is None:
         return False, "Could not read image"
 
-    # 1. Blur Detection (Laplacian Variance)
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-    if laplacian_var < 50: # Threshold can be adjusted
-        return False, "Image is too blurry. Please hold the camera steady."
+    # Resize for consistent thresholding regardless of camera resolution
+    # Standardizing to a width of 800px maintains speed and accuracy
+    h, w = image.shape[:2]
+    scale = 800 / float(w)
+    resized = cv2.resize(image, (800, int(h * scale)))
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
 
-    # 2. Glare Detection (Histogram analysis)
-    # Check for over-exposed areas
-    hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
-    # If a significant portion of pixels are very bright (e.g., > 240)
-    bright_pixels = np.sum(hist[240:])
-    total_pixels = image.shape[0] * image.shape[1]
-    ratio = bright_pixels / total_pixels
-    print(f"Glare ratio: {ratio}")
-    if ratio > 0.5: # Relaxed for testing
-        return False, f"Glare detected ({ratio:.2f}). Please move to a location with better lighting."
+    # 2. Advanced Blur Detection (Laplacian)
+    # Increased threshold (100 is a standard starting point for 720p/1080p)
+    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+    if laplacian_var < blur_threshold:
+        return False, f"Image too blurry ({laplacian_var:.1f}). Hold camera steady."
+
+    # 3. Refined Glare Detection
+    # Instead of just counting bright pixels, we look for 'hotspots'
+    # using a binary threshold for pixels near-white (e.g., > 250)
+    _, mask = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY)
+    
+    # Use morphological closing to bridge small gaps in glare spots
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    
+    bright_pixel_count = cv2.countNonZero(mask)
+    total_pixels = resized.shape[0] * resized.shape[1]
+    glare_ratio = bright_pixel_count / total_pixels
+
+    if glare_ratio > glare_ratio_threshold:
+        return False, f"Glare detected ({glare_ratio:.2%}). Adjust lighting."
 
     return True, "Quality OK"
 
+
+    
 def check_liveness(image_path):
     """
     Checks if the face is real using DeepFace anti-spoofing.
@@ -67,20 +81,30 @@ def check_liveness(image_path):
         # If face not detected, extract_faces raises error
         return False, f"Liveness check error: {str(e)}"
 
-def get_face_embedding(image_path):
+def get_face_embedding(image_path, require_single=True):
     """
     Generates face embedding using DeepFace.
+    If require_single is True, raises ValueError if more than 1 face is detected.
     """
     try:
         # Using ArcFace for better accuracy, or VGG-Face
         embedding_objs = DeepFace.represent(
             img_path=image_path,
             model_name="ArcFace",
+            detector_backend="retinaface",
             enforce_detection=True
         )
         if not embedding_objs:
             return None
+            
+        # Security/Accuracy check: Ensure only one face is in the registration photo
+        if require_single and len(embedding_objs) > 1:
+            raise ValueError(f"Multiple faces detected ({len(embedding_objs)}). Please ensure only your face is visible.")
+            
         return embedding_objs[0]["embedding"]
+        
+    except ValueError as ve:
+        raise ve
     except Exception as e:
         print(f"Error generating embedding: {e}")
         return None
@@ -94,6 +118,7 @@ def verify_face(image_path, stored_embedding):
         new_embedding_objs = DeepFace.represent(
             img_path=image_path,
             model_name="ArcFace",
+            detector_backend="retinaface",
             enforce_detection=True
         )
         if not new_embedding_objs:

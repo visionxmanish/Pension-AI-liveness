@@ -4,7 +4,9 @@ python-multipart
 sqlalchemy
 deepface
 opencv-python
+opencv-contrib-python
 tf-keras
 requests
 torch
-opencv-contrib-python
+retina-face
+pillow-heif

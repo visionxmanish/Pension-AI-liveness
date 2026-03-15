@@ -10,6 +10,44 @@ from services.face_service import get_face_embedding, validate_image_quality, ve
 from services.utils import generate_meet_link
 import json
 
+from PIL import Image, ExifTags
+import pillow_heif
+pillow_heif.register_heif_opener()
+
+def process_uploaded_image(upload_file: UploadFile) -> str:
+    """ Processes upload, standardizes format/orientation, compresses large files, returns temp path """
+    upload_file.file.seek(0)
+    img = Image.open(upload_file.file)
+    
+    try:
+        # Handle EXIF orientation (crucial for mobile photos)
+        for orientation in ExifTags.TAGS.keys():
+            if ExifTags.TAGS[orientation] == 'Orientation':
+                break
+        exif = img._getexif()
+        if exif is not None:
+            exif_orientation = exif.get(orientation, 1)
+            if exif_orientation == 3:
+                img = img.rotate(180, expand=True)
+            elif exif_orientation == 6:
+                img = img.rotate(270, expand=True)
+            elif exif_orientation == 8:
+                img = img.rotate(90, expand=True)
+    except Exception:
+        pass
+
+    # Convert alpha channels/HEIC to standard RGB
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+        
+    # Resize securely to prevent OOM errors on massive phone camera pics
+    img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+    
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+    img.save(tmp.name, format="JPEG", quality=90)
+    tmp.close()
+    return tmp.name
+
 # Create tables
 Base.metadata.create_all(bind=engine)
 
@@ -27,10 +65,10 @@ async def register_user(
     if db_user:
         raise HTTPException(status_code=400, detail="User with this Pension ID already registered")
 
-    # Save temp file
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        tmp_path = tmp.name
+    try:
+        tmp_path = process_uploaded_image(file)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image format or file corrupted: {str(e)}")
 
     try:
         # 1. Validate Quality
@@ -39,7 +77,11 @@ async def register_user(
             raise HTTPException(status_code=400, detail=f"Image quality check failed: {msg}")
 
         # 2. Generate Embedding
-        embedding = get_face_embedding(tmp_path)
+        try:
+            embedding = get_face_embedding(tmp_path, require_single=True)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+            
         if embedding is None:
             raise HTTPException(status_code=400, detail="No face detected in the image")
 
@@ -86,10 +128,14 @@ async def verify_user(
     
     stored_embedding = user.face_encodings[0].embedding
 
-    # Save temp file
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        tmp_path = tmp.name
+    try:
+        tmp_path = process_uploaded_image(file)
+    except Exception as e:
+        return schemas.VerificationResponse(
+            status="failure",
+            message=f"Invalid image format or file corrupted: {str(e)}",
+            meet_link=generate_meet_link()
+        )
 
     try:
         # 1. Validate Quality (Anti-glare, Blur)

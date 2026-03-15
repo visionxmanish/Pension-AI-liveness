@@ -45,6 +45,14 @@ This is a FastAPI-based backend for a pension application that handles face regi
     - `pension_id` (string): Unique ID to verify.
     - `file` (file): New face image to compare.
 
+### 3. Verify Liveness (Video)
+- **URL**: `/verify_liveness_video`
+- **Method**: `POST`
+- **Body** (`multipart/form-data`):
+    - `pension_id` (string): Unique ID to verify.
+    - `verification_type` (string): Actions to check, comma-separated. E.g., `smile,move_head_left,move_head_right`.
+    - `file` (file): Video file (`.mp4`) containing the user performing the actions.
+
 ## How to Test with Postman
 
 Follow these steps to test the API using Postman:
@@ -73,6 +81,22 @@ Follow these steps to test the API using Postman:
     - Key: `pension_id`, Value: `1001` (Type: Text)
     - Key: `file`, Value: [Select a photo of the same person] (Type: File)
 7.  Click **Send**.
+
+## How to Test with OpenAPI (Swagger UI)
+
+FastAPI automatically generates an interactive testing interface. This is the fastest way to test endpoints like the Video Liveness check.
+
+1. Ensure the server is running (`uvicorn main:app --reload`).
+2. Open your web browser and go to `http://127.0.0.1:8000/docs`.
+3. You will see a list of available endpoints (`/register`, `/verify`, `/verify_liveness_video`).
+4. Click on the endpoint you want to test (e.g., `POST /verify_liveness_video` to expand it).
+5. Click the **"Try it out"** button in the top right corner of the expanded endpoint.
+6. Fill in the required fields:
+   - `pension_id`: Enter the registered ID (e.g., `1001`).
+   - `verification_type`: Enter the actions you recorded in your video (e.g., `smile` or `move_head_left,turn_right`).
+   - `file`: Click "Choose File" and upload your `.mp4` video.
+7. Click the large blue **"Execute"** button below the form.
+8. Scroll down slightly to see the **Server response** containing the success/failure JSON message.
 
 ### Interpreting Responses
 
