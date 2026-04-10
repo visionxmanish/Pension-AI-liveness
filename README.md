@@ -2,6 +2,11 @@
 
 This is a FastAPI-based backend for a pension application that handles face registration, recognition, and liveness detection (via quality checks).
 
+
+
+## Run this in intranet
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+
 ## Features
 - **Face Registration**: Store user details and face embeddings.
 - **Face Verification**: Authenticate users using face recognition (DeepFace/ArcFace).

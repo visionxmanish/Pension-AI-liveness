@@ -9,6 +9,8 @@ import tempfile
 from services.face_service import get_face_embedding, validate_image_quality, verify_face, check_liveness
 from services.utils import generate_meet_link
 import json
+from fastapi.middleware.cors import CORSMiddleware
+from services.liveness_service import verify_video_liveness
 
 from PIL import Image, ExifTags
 import pillow_heif
@@ -53,6 +55,15 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Pension Face Recognition API")
 
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # for development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.post("/register", response_model=schemas.UserResponse)
 async def register_user(
     pension_id: str = Form(...),
@@ -62,8 +73,7 @@ async def register_user(
 ):
     # Check if user already exists
     db_user = db.query(models.User).filter(models.User.pension_id == pension_id).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="User with this Pension ID already registered")
+
 
     try:
         tmp_path = process_uploaded_image(file)
@@ -72,6 +82,7 @@ async def register_user(
 
     try:
         # 1. Validate Quality
+        # Mobile cameras and emulators naturally apply noise reduction that lowers Laplacian variance. 10.0 is an ultra-forgiving threshold for testing.
         is_valid, msg = validate_image_quality(tmp_path)
         if not is_valid:
             raise HTTPException(status_code=400, detail=f"Image quality check failed: {msg}")
@@ -86,20 +97,29 @@ async def register_user(
             raise HTTPException(status_code=400, detail="No face detected in the image")
 
         # 3. Save to DB
-        new_user = models.User(pension_id=pension_id, name=name)
-        db.add(new_user)
-        db.commit()
-        db.refresh(new_user)
+        if not db_user:
+            db_user = models.User(pension_id=pension_id, name=name)
+            db.add(db_user)
+            db.commit()
+            db.refresh(db_user)
+        else:
+            # Replace old encodings
+            db.query(models.FaceEncoding).filter(models.FaceEncoding.user_id == db_user.id).delete()
+            db_user.name = name
+            db.commit()
 
-        new_face = models.FaceEncoding(user_id=new_user.id, embedding=embedding)
+        new_face = models.FaceEncoding(user_id=db_user.id, embedding=embedding)
         db.add(new_face)
         db.commit()
 
-        return new_user
+        return db_user
 
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+# =============================================== VERIFY USER FACE ==================================================================
 
 @app.post("/verify", response_model=schemas.VerificationResponse)
 async def verify_user(
@@ -175,8 +195,11 @@ async def verify_user(
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-from services.liveness_service import verify_video_liveness
 
+
+#  ==================================================================================================================================
+# =============================================== VERIFY USER LIVENESS ==================================================================
+# ===================================================================================================================================
 @app.post("/verify_liveness_video", response_model=schemas.VerificationResponse)
 async def verify_liveness_video(
     pension_id: str = Form(...),
