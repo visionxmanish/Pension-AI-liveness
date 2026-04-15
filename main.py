@@ -179,6 +179,15 @@ async def verify_user(
         # 3. Verify Face
         is_match, match_msg = verify_face(tmp_path, stored_embedding)
         
+        # Create verification record
+        verification_status = "success" if is_match else "failure"
+        new_verification = models.Verification(
+            user_id=user.id,
+            status=verification_status
+        )
+        db.add(new_verification)
+        db.commit()
+
         if is_match:
             return schemas.VerificationResponse(
                 status="success",
@@ -288,6 +297,15 @@ async def verify_liveness_video(
         if best_frame_path:
             is_match, match_msg = verify_face(best_frame_path, stored_embedding)
             
+            # Create verification record
+            verification_status = "success" if is_match else "failure"
+            new_verification = models.Verification(
+                user_id=user.id,
+                status=verification_status
+            )
+            db.add(new_verification)
+            db.commit()
+
             if is_match:
                 return schemas.VerificationResponse(
                     status="success",
@@ -318,3 +336,100 @@ async def verify_liveness_video(
             os.remove(tmp_video_path)
         if best_frame_path and os.path.exists(best_frame_path):
             os.remove(best_frame_path)
+
+
+# Admin User related 
+
+@app.get("/admin/users")
+async def get_users(db: Session = Depends(get_db)):
+    users = db.query(models.User).all()
+    return users
+
+@app.get("/admin/users/{pension_id}")
+async def get_user(pension_id: str, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.pension_id == pension_id).first()
+    return user
+
+@app.post("/admin/users/{pension_id}")
+async def update_user(pension_id: str, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.pension_id == pension_id).first()
+    return user
+
+# Admin dashboard data 
+# Total enrollments
+# Percentage Change in enrollments
+# Total Verifications
+# Percentage Change in Verifications
+# Total Failed Verifications
+# Percentage Change in Failed Verifications
+
+from datetime import datetime, timedelta
+from sqlalchemy import func
+
+@app.get("/admin/dashboard")
+async def get_dashboard_data(db: Session = Depends(get_db)):
+    today = datetime.utcnow().date()
+    yesterday = today - timedelta(days=1)
+
+    # --- ENROLLMENTS ---
+    total_enrollments = db.query(models.User).count()
+
+    today_enrollments = db.query(models.User).filter(
+        func.date(models.User.created_at) == today
+    ).count()
+
+    yesterday_enrollments = db.query(models.User).filter(
+        func.date(models.User.created_at) == yesterday
+    ).count()
+
+    enrollment_percentage = (
+        ((today_enrollments - yesterday_enrollments) / yesterday_enrollments) * 100
+        if yesterday_enrollments > 0 else 0
+    )
+
+    # --- VERIFICATIONS ---
+    total_verifications = db.query(models.Verification).count()
+
+    today_verifications = db.query(models.Verification).filter(
+        func.date(models.Verification.created_at) == today
+    ).count()
+
+    yesterday_verifications = db.query(models.Verification).filter(
+        func.date(models.Verification.created_at) == yesterday
+    ).count()
+
+    verification_percentage = (
+        ((today_verifications - yesterday_verifications) / yesterday_verifications) * 100
+        if yesterday_verifications > 0 else 0
+    )
+
+    # --- FAILED VERIFICATIONS ---
+    total_failed_verifications = db.query(models.Verification).filter(
+        models.Verification.status == "failure"
+    ).count()
+
+    today_failed = db.query(models.Verification).filter(
+        func.date(models.Verification.created_at) == today,
+        models.Verification.status == "failure"
+    ).count()
+
+    yesterday_failed = db.query(models.Verification).filter(
+        func.date(models.Verification.created_at) == yesterday,
+        models.Verification.status == "failure"
+    ).count()
+
+    failed_percentage = (
+        ((today_failed - yesterday_failed) / yesterday_failed) * 100
+        if yesterday_failed > 0 else 0
+    )
+
+    return {
+        "total_enrollments": total_enrollments,
+        "percentage_change_in_enrollments": round(enrollment_percentage, 2),
+
+        "total_verifications": total_verifications,
+        "percentage_change_in_verifications": round(verification_percentage, 2),
+
+        "total_failed_verifications": total_failed_verifications,
+        "percentage_change_in_failed_verifications": round(failed_percentage, 2),
+    }
