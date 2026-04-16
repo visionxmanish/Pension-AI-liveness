@@ -2,6 +2,8 @@
 
 This is a FastAPI-based backend for a pension application that handles face registration, recognition, and liveness detection (via quality checks).
 
+## Run this in local
+uvicorn main:app --reload
 
 
 ## Run this in intranet
